@@ -10,10 +10,13 @@
  *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
  *  for the specific language governing permissions and limitations under the License.
  *
- *  Virtual Thermostat
+ *  Ceiling fan control (based on virtual thermostat)
  *  -fix issues with initializing for first time.
  *  -mode enum for cooling = 1 instead of cool.
  *  Author: SmartThings,modified  by Brian Russell
+ *
+ *  NOTE: when the selected mode that is running under changes to something else, the outputs will remain in the last state!  make sure turn these
+ *  off in the other mode state logic if needed.
  */
 definition(
     name: "Virtual Thermostat2",
@@ -29,64 +32,78 @@ preferences {
 	section("Choose a temperature sensor... "){
 		input "sensor", "capability.temperatureMeasurement", title: "Sensor"
 	}
-	section("Select the heater or air conditioner outlet(s)... "){
+	section("Select the ceiling fan outlet or switch."){
 		input "outlets", "capability.switch", title: "Outlets", multiple: true
 	}
-	section("Set the desired temperature..."){
-		input "setpoint", "decimal", title: "Set Temp"
+	section("Set the desired setpoint..."){
+		input "setpoint", "decimal", title: "Setpoint", required: true
 	}
-	section("Set the desired differential temperature..."){
+	section("Set the desired differential temperature (2 deg default)"){
 		input "differential", "decimal", title: "Differential"
 	}
-	section("When there's been movement from (optional, leave blank to not require motion)..."){
-		input "motion", "capability.motionSensor", title: "Motion", required: false
+	section("Select fan mode."){
+		input "fanMode", "enum", title: "Heating or cooling?", options: ["heat","cool"]
 	}
-	section("Within this number of minutes..."){
-		input "minutes", "number", title: "Minutes", required: false
+    section("Enable control."){
+		input "enable", "bool", title: "Enable?", required: true
 	}
-	section("But never go below (or above if A/C) this value with or without motion..."){
-		input "emergencySetpoint", "decimal", title: "Emer Temp", required: false
-	}
-	section("Select 'heat' for a heater and 'cool' for an air conditioner..."){
-		input "mode", "enum", title: "Heating or cooling?", options: ["heat","cool"]
-	}
+/*    section("Modes to run in.  Outputs will turn OFF when not in these modes."){
+        input "modes", "mode", title: "only when mode is", multiple: true, required: false
+        }*/
 }
 
 def installed()
 {
 	subscribe(sensor, "temperature", temperatureHandler)
-	if (motion) {
+    subscribe(location, "mode", modeChangeHandler)
+/*	if (motion) {
 		subscribe(motion, "motion", motionHandler)
-	}
-        initialize()
+	}*/
+    initialize()
 }
 
 def updated()
 {
 	unsubscribe()
-	subscribe(sensor, "temperature", temperatureHandler)
-	if (motion) {
+    if(enable)
+    {
+		subscribe(sensor, "temperature", temperatureHandler)
+        subscribe(location, "mode", modeChangeHandler)
+        initialize()
+    }
+/*	if (motion) {
 		subscribe(motion, "motion", motionHandler)
 	}
-        initialize()
+*/
 }
 
 def initialize()
-{
+{   
+    log.debug("initialize")
+    state.enabled = enabled
+   	state.coolingCall= false
+    state.heatingCall = false
 	def lastTemp = sensor.currentTemperature
+    log.debug("initial temp = $lastTemp, modes = $location.modes, mode=$location.mode")
 	if (lastTemp != null) {
 		handleTemperature(lastTemp)
 	}
 }
 
+def modeChangeHandler(evt) {
+    //state.enabled = getModeOk()
+    log.debug "mode changed to ${evt.value}"
+/*    if(!state.enabled)
+   	{
+	       log.debug "Outlets OFF - not in selected mode(s)."
+           outlets.off()
+    } */
+}
+
 def handleTemperature(currentTemp)
 {
-	def isActive = hasBeenRecentMotion()
-	if (isActive || emergencySetpoint) {
-		evaluate(currentTemp, isActive ? setpoint : emergencySetpoint, differential)
-	}
-	else {
-		outlets.off()
+	if (enable) {
+		evaluate(currentTemp, setpoint , differential)
 	}
 }
 
@@ -95,7 +112,50 @@ def temperatureHandler(evt)
         handleTemperature(evt.doubleValue)
 }
 
-def motionHandler(evt)
+private getModeOk() {
+	def result = !modes || modes.contains(location.mode)
+	log.trace "modeOk = $result"
+	result
+}
+
+private evaluate(currentTemp, desiredTemp, differentialTemp)
+{
+	def threshold = 2.0
+    if (differentialTemp > threshold)
+    { 
+        threshold = differential
+    }
+        
+    log.debug "EVALUATE($currentTemp, $desiredTemp, $threshold) mode=$fanMode"
+	if (fanMode == "1" || fanMode == "cool") {
+		// cooling
+		if (currentTemp >= desiredTemp) {
+	       log.debug "Cooling Outlets ON"
+           outlets.on()
+           state.coolingCall = true
+		}
+		else if (state.coolingCall && (currentTemp < desiredTemp - threshold)){
+	       log.debug "Cooling Outlets OFF"
+			outlets.off()
+            state.coolingCall = false
+		}
+	}
+	else {
+		// heating mode
+		if (currentTemp <= desiredTemp) {
+	       log.debug "Heating Outlets ON"
+           outlets.on()
+           state.heatingCall = true
+           }
+		else if (currentTemp > desiredTemp + threshold){
+	       log.debug "Heating Outlets OFF"
+           outlets.off()
+           state.heatingCall = false
+           }
+	}
+}
+
+/*def motionHandler(evt)
 {
 	if (evt.value == "active") {
 		def lastTemp = sensor.currentTemperature
@@ -116,39 +176,10 @@ def motionHandler(evt)
 		}
 	}
 }
+*/
 
-private evaluate(currentTemp, desiredTemp, differentialTemp)
-{
-	def threshold = 1.0
-        if (differentialTemp > threshold)
-        { 
-            threshold = differential
-        }
-        
-    log.debug "EVALUATE($currentTemp, $desiredTemp, $threshold) mode=$mode"
-	if (mode == "1" || mode == cool) {
-		// air conditioner
-		if (currentTemp - desiredTemp >= threshold) {
-	       log.debug "Outlets ON"
-           outlets.on()
-		}
-		else if (desiredTemp - currentTemp >= threshold) {
-	       log.debug "Outlets OFF"
-			outlets.off()
-		}
-	}
-	else {
-		// heater
-		if (desiredTemp - currentTemp >= threshold) {
-			outlets.on()
-		}
-		else if (currentTemp - desiredTemp >= threshold) {
-			outlets.off()
-		}
-	}
-}
 
-private hasBeenRecentMotion()
+/* private hasBeenRecentMotion()
 {
 	def isActive = false
 	if (motion && minutes) {
@@ -166,3 +197,4 @@ private hasBeenRecentMotion()
 	}
 	isActive
 }
+*/
